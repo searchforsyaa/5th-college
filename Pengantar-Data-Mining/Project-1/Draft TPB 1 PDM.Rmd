@@ -1,0 +1,651 @@
+---
+title: "Draft 1 TPB"
+author: "Muhammad Ardiansyah"
+date: "2025-10-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+getwd()
+list.files()
+```
+
+# Import Library
+```{r}
+# ==========================================
+# 1. Import Library
+# ==========================================
+cat("--- Memuat Library ---\n")
+library(tidyverse)     # Untuk data wrangling (dplyr, ggplot2, dll)
+library(readr)         # Untuk membaca CSV
+library(caret)         # Framework utama Machine Learning
+library(recipes)       # Untuk pipeline preprocessing
+library(rpart)         # Untuk Decision Tree
+library(randomForest)  # Untuk Random Forest
+library(gbm)           # Untuk Gradient Boosting
+library(knitr)         # Untuk tabel (digunakan di RMarkdown/Quarto)
+library(pROC)          # Untuk kurva ROC
+library(gridExtra)     # Untuk mengatur plot
+library(forcats)       # Untuk manipulasi faktor
+library(visdat)        # Untuk visualisasi data hilang
+library(ggcorrplot)    # plot korelasi
+library(stringr)       # Untuk memanipulasi string 'income'
+
+# =Abaikan peringatan dari dplyr::summarise=
+options(dplyr.summarise.inform = FALSE)
+```
+
+# Helper
+```{r}
+# ==========================================
+# 2. Definisi Fungsi Helper
+# ==========================================
+cat("--- Mendefinisikan Fungsi Helper ---\n")
+
+# Fungsi untuk menghitung metrik F1, Precision, Recall dari confusion matrix
+# Ini penting karena 'caret' tidak selalu menyediakan F1 secara default
+get_metrics <- function(actual, predicted) {
+  cm <- caret::confusionMatrix(predicted, actual, positive = "Yes")
+  acc <- cm$overall["Accuracy"]
+  recall <- cm$byClass["Recall"]
+  
+  # Penanganan jika Precision NA (tidak ada True Positives)
+  precision <- ifelse(!is.na(cm$byClass["Precision"]),
+                      cm$byClass["Precision"], 
+                      cm$byClass["Pos Pred Value"]) # Fallback
+  
+  # Penanganan jika F1 NA
+  f1 <- ifelse(!is.na(cm$byClass["F1"]),
+               cm$byClass["F1"],
+               (2 * precision * recall) / (precision + recall))
+  
+  # Ganti NaN (hasil dari 0/0) dengan 0
+  f1 <- ifelse(is.nan(f1), 0, f1)
+  
+  tibble(
+    Accuracy  = as.numeric(acc),
+    Recall    = as.numeric(recall),
+    Precision = as.numeric(precision),
+    F1_Score  = as.numeric(f1)
+  )
+}
+
+# Fungsi kustom untuk 'caret' agar mengoptimalkan F1-Score
+f1Summary <- function(data, lev = NULL, model = NULL) {
+  # Pastikan levelnya benar ("Yes" dan "No")
+  lvls <- levels(data$obs)
+  if (length(lvls) != 2) {
+    stop("Fungsi f1Summary hanya untuk klasifikasi biner.")
+  }
+  
+  # Hitung F1, Precision, Recall
+  metrics <- get_metrics(actual = data$obs, predicted = data$pred)
+  
+  # 'caret' memerlukan output berupa named vector
+  # Nama "F1_Score" di sini harus sama dengan 'metric' di train()
+  c(F1 = metrics$F1_Score,
+    Precision = metrics$Precision,
+    Recall = metrics$Recall)
+}
+
+
+# Fungsi untuk mendapatkan prediksi HANYA dari 'bestTune'
+best_pred <- function(fit) {
+  p <- fit$pred
+  if (is.null(fit$bestTune) || ncol(fit$bestTune) == 0) return(p)
+  
+  # Filter prediksi berdasarkan parameter bestTune
+  idx <- rep(TRUE, nrow(p))
+  for (nm in names(fit$bestTune)) {
+    idx <- idx & (p[[nm]] == fit$bestTune[[nm]][1])
+  }
+  p[idx, , drop = FALSE]
+}
+
+# Fungsi untuk menghitung rata-rata metrik dari hasil CV
+mean_metrics_from_pred <- function(pred_df, label) {
+  per_fold <- pred_df %>%
+    group_by(Resample) %>%
+    summarise(
+      Accuracy  = get_metrics(obs, pred)$Accuracy,
+      Recall    = get_metrics(obs, pred)$Recall,
+      Precision = get_metrics(obs, pred)$Precision,
+      F1_Score  = get_metrics(obs, pred)$F1_Score,
+      .groups = "drop"
+    )
+  
+  per_fold %>%
+    summarise(
+      Accuracy  = round(mean(Accuracy, na.rm = TRUE), 4),
+      Recall    = round(mean(Recall, na.rm = TRUE), 4),
+      Precision = round(mean(Precision, na.rm = TRUE), 4),
+      F1_Score  = round(mean(F1_Score, na.rm = TRUE), 4)
+    ) %>%
+    mutate(Model = label, .before = 1)
+}
+
+# Fungsi untuk menemukan nama kolom probabilitas "Yes"
+yes_col <- function(df) {
+  nm <- colnames(df)
+  cand <- nm[nm == "Yes"]
+  if (length(cand) == 1) return("Yes")
+  
+  # Fallback jika kolomnya dinamis (misal, dari 'gbm')
+  cand_prob <- nm[grepl("^Yes$", nm) | grepl("\\.Yes$", nm)]
+  if (length(cand_prob) == 1) return(cand_prob)
+  
+  stop("Kolom probabilitas 'Yes' tidak ditemukan di data prediksi.")
+}
+```
+
+# Load Data
+```{r}
+# ==========================================
+# 3. Data Loading
+# ==========================================
+cat("--- Memuat Data ---\n")
+set.seed(456) # Untuk reproduktifitas
+
+# Ganti path ini dengan lokasi file Anda
+# file_path <- "D:/Kuliah/Tugas Kuliah/semester 5/Pengantar Data Mining/Project 1/dataset.csv"
+file_path <- "dataset.csv" # Asumsi file ada di working directory
+
+tryCatch({
+  data_raw <- read_csv(file_path, na = c("", "NA", "nan"), show_col_types = FALSE)
+  cat(paste("Sukses memuat data dari:", file_path, "\n"))
+  cat(paste("Dimensi data:", nrow(data_raw), "baris,", ncol(data_raw), "kolom\n"))
+}, error = function(e) {
+  cat(paste("Error: Tidak dapat menemukan atau membaca file di '", file_path, "'.\n", sep = ""))
+  cat("Pastikan file 'dataset.csv' berada di direktori kerja R Anda.\n")
+  stop(e)
+})
+
+if (!("Y" %in% names(data_raw))) {
+  stop("Kolom target 'Y' tidak ditemukan di dataset. Periksa nama kolom.")
+}
+```
+
+# EDA
+```{r}
+# ==========================================
+# 4. Eksplorasi Data Awal (EDA)
+# ==========================================
+cat("--- Memulai Eksplorasi Data (EDA) ---\n")
+
+# Cek struktur data
+cat("Struktur data (awal):\n")
+print(glimpse(data_raw))
+```
+
+```{r}
+# Plot 1: Distribusi Variabel Target (Y)
+p1 <- data_raw %>%
+  mutate(Y = factor(Y, levels = c(0, 1), labels = c("No", "Yes"))) %>%
+  ggplot(aes(x = Y, fill = Y)) +
+  geom_bar(show.legend = FALSE) +
+  geom_text(stat = 'count', aes(label = ..count..), vjust = -0.5) +
+  labs(title = "Distribusi Target (Y)", x = "Kupon Diterima?", y = "Jumlah") +
+  theme_minimal()
+print(p1)
+```
+
+```{r}
+# Plot 2: Visualisasi Data Hilang (NA)
+cat("Membuat plot data hilang (mungkin perlu waktu)... \n")
+tryCatch({
+   print(vis_dat(data_raw, warn_large_data = FALSE) + labs(title = "Visualisasi Data Hilang (NA)"))
+}, error = function(e) {
+  cat("Gagal membuat plot vis_dat. Melanjutkan...\n")
+  # Hitung persentase NA per kolom sebagai alternatif
+  na_summary <- sort(colMeans(is.na(data_raw)) * 100, decreasing = TRUE)
+  cat("Persentase NA per kolom:\n")
+  print(na_summary[na_summary > 0])
+})
+```
+```{r}
+# Cek beberapa variabel prediktor penting vs Y
+# Tipe Kupon
+print(
+  data_raw %>%
+    ggplot(aes(x = fct_reorder(coupon, Y, .fun = mean), fill = as.factor(Y))) +
+    geom_bar(position = "fill") +
+    labs(title = "Tingkat Penerimaan vs Tipe Kupon",
+         x = "Tipe Kupon",
+         y = "Proporsi",
+         fill = "Diterima (Y)") +
+    coord_flip() +
+    theme_minimal()
+)
+
+# Penumpang (Passanger)
+print(
+  data_raw %>%
+    ggplot(aes(x = fct_reorder(passanger, Y, .fun = mean), fill = as.factor(Y))) +
+    geom_bar(position = "fill") +
+    labs(title = "Tingkat Penerimaan vs Penumpang",
+         x = "Penumpang",
+         y = "Proporsi",
+         fill = "Diterima (Y)") +
+    coord_flip() +
+    theme_minimal()
+)
+```
+
+```{r}
+cat("--- EDA 4.5: Heatmap Korelasi (Variabel Numerik/Biner) ---\n")
+cat("Catatan: Ini HANYA menganalisis variabel numerik/biner mentah.\n")
+cat("Variabel kategorikal (spt 'occupation', 'age') dikecualikan dari plot ini.\n")
+
+tryCatch({
+  # Pilih hanya kolom numerik atau biner dari data mentah
+  data_numeric <- data_raw %>%
+    select(
+      Y,
+      temperature,
+      has_children,
+      toCoupon_GEQ15min,
+      toCoupon_GEQ25min,
+      direction_same,
+      direction_opp
+    )
+  
+  # Hitung matriks korelasi, buang NA
+  cor_matrix <- cor(data_numeric, use = "complete.obs")
+  
+  # Plot heatmap
+  p_heatmap <- ggcorrplot(
+    cor_matrix,
+    method = "circle",    # Metode visualisasi
+    type = "lower",       # Tampilkan hanya bagian bawah
+    lab = TRUE,           # Tampilkan nilai korelasi
+    lab_size = 3,
+    colors = c("#6D9EC1", "white", "#E46726"), # Skema warna
+    title = "Heatmap Korelasi Variabel Numerik/Biner"
+  )
+  print(p_heatmap)
+  
+}, error = function(e) {
+  cat("Gagal membuat heatmap korelasi. Error:", e$message, "\n")
+})
+```
+
+
+# Preprocessing
+```{r}
+# ==========================================
+# 5. Preprocessing Awal & Split Data
+# ==========================================
+cat("--- Memulai Preprocessing Awal & Split Data ---\n")
+
+# --- 5.1. Penghapusan Kolom Manual ---
+# 'car': Hampir seluruhnya NA (terlihat dari vis_dat)
+# 'direction_opp': Redundan, kebalikan sempurna dari 'direction_same'
+# 'toCoupon_GEQ5min': target hanya 1
+cols_to_remove <- c("car", "direction_opp","toCoupon_GEQ5min")
+data_clean <- data_raw %>%
+  select(-any_of(cols_to_remove))
+
+cat(paste("Menghapus kolom:", paste(cols_to_remove, collapse = ", "), "\n"))
+
+# --- 5.2. Konversi Tipe Data ---
+# Ubah Y menjadi factor (penting untuk 'caret')
+# Ubah semua prediktor lain menjadi factor 
+data_factor <- data_clean %>%
+  mutate(
+    Y = factor(Y, levels = c(0, 1), labels = c("No", "Yes"))
+  )
+
+pred_cols <- setdiff(names(data_factor), "Y")
+data_factor[pred_cols] <- lapply(data_factor[pred_cols], function(x) {
+  if (is.factor(x)) return(x)
+  as.factor(x)
+})
+
+cat("Mengubah kolom target 'Y' menjadi factor (No/Yes).\n")
+cat("Mengubah semua prediktor menjadi factor untuk encoding.\n")
+
+# Cek level dari Y
+cat("Level Y setelah konversi:\n")
+print(levels(data_factor$Y))
+```
+
+```{r}
+# --- 5.3. Split Data 80/20 (Train/Test) ---
+# Ini adalah split paling penting. 'data_test' adalah "Ujian Akhir"
+set.seed(456)
+train_index <- createDataPartition(data_factor$Y, p = 0.8, list = FALSE, times = 1)
+
+data_train <- data_factor[train_index, ]
+data_test  <- data_factor[-train_index, ]
+
+cat(paste("Data dibagi menjadi Train Set (", nrow(data_train), " baris) dan Test Set (", nrow(data_test), " baris).\n"))
+```
+
+```{r}
+# ==========================================
+# 6. Definisi 'Recipe' Preprocessing
+# ==========================================
+cat("--- Mendefinisikan Recipe Preprocessing ---\n")
+# Recipe ini akan diterapkan di dalam Cross-Validation untuk mencegah data leakage
+
+rec_base <- recipe(Y ~ ., data = data_train) %>%
+  # 1. Pertahanan Error: Hapus prediktor yang bervarians nol (konstan)
+  step_zv(all_predictors()) %>%
+  
+  # 2. Imputasi: Gunakan modus (nilai paling umum) untuk mengisi NA
+  # Sesuai permintaan Anda. Diterapkan ke semua prediktor nominal (faktor).
+  step_impute_mode(all_nominal_predictors()) %>%
+  
+  # 3. Encoding: Ubah semua faktor menjadi variabel dummy (one-hot encoding)
+  # Ini wajib untuk model seperti GLM (Regresi Logistik) dan GBM.
+  step_dummy(all_nominal_predictors())
+
+cat("Recipe didefinisikan dengan langkah: step_zv, step_impute_mode, step_dummy.\n")
+```
+
+# Modeling
+```{r}
+# ==========================================
+# 7. Pengaturan Kontrol Training (Cross-Validation)
+# ==========================================
+cat("--- Mengatur Kontrol Training (10-Fold CV) ---\n")
+set.seed(456)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+  classProbs = TRUE,        # Perlu untuk ROC dan probabilitas
+  savePredictions = "final",
+  verboseIter = FALSE,
+  summaryFunction = f1Summary, # Gunakan fungsi F1 kustom kita
+  allowParallel = TRUE
+)
+cat("Metode CV: 10-Fold. Metrik Optimasi: F1-Score.\n")
+```
+```{r}
+# ==========================================
+# 8. Training Model (CV pada Data Train)
+# ==========================================
+cat("--- Memulai Training Model (CV pada Data Train) ---\n")
+# Kita melatih semua model menggunakan 'metric = "F1"'
+# Ini memberi tahu 'caret' untuk memilih model terbaik berdasarkan F1-Score
+```
+
+```{r}
+# --- Model 1: Logistic Regression (glm) ---
+cat("Training Regresi Logistik...\n")
+set.seed(456)
+fit_lr <- train(
+  rec_base,
+  data = data_train, # Train HANYA pada data_train
+  method = "glm",
+  family = binomial(),
+  trControl = ctrl,
+  metric = "F1" # Gunakan F1 untuk tuning
+)
+cat("...Regresi Logistik selesai.\n")
+
+print(fit_lr)
+```
+
+```{r}
+# --- Model 2: Decision Tree (rpart) ---
+cat("Training Decision Tree...\n")
+set.seed(456)
+fit_dt <- train(
+  rec_base,
+  data = data_train,
+  method = "rpart",
+  trControl = ctrl,
+  metric = "F1"
+)
+cat("...Decision Tree selesai.\n")
+print(fit_dt)
+```
+
+```{r}
+# --- Model 3: Random Forest (rf) ---
+cat("\nTraining Random Forest...\n")
+set.seed(456)
+fit_rf <- train(
+  rec_base,
+  data = data_train,
+  method = "rf",
+  trControl = ctrl,
+  metric = "F1"       # Optimalkan berdasarkan F1
+)
+print(fit_rf)
+```
+
+```{r}
+# --- Model 5: Ensemble (Mean LR + DT) ---
+cat("Membuat Ensemble (Mean LR + DT)...\n")
+# STRATEGI 4: Menggunakan model terbaik (LR dan DT)
+
+# Ekstrak prediksi CV dari model yang sudah dilatih
+pred_lr_cv <- best_pred(fit_lr)
+pred_dt_cv <- best_pred(fit_dt)
+
+# Temukan kolom probabilitas "Yes"
+yes_col_lr <- yes_col(pred_lr_cv)
+yes_col_dt <- yes_col(pred_dt_cv)
+
+# Gabungkan probabilitas
+pred_ens_cv <- pred_lr_cv %>%
+  select(rowIndex, Resample, obs, prob_lr = all_of(yes_col_lr)) %>%
+  inner_join(
+    pred_dt_cv %>% select(rowIndex, Resample, prob_dt = all_of(yes_col_dt)),
+    by = c("rowIndex", "Resample")
+  ) %>%
+  mutate(
+    # Hitung rata-rata probabilitas LR + DT
+    prob_ens = (prob_lr + prob_dt) / 2,
+    # Tentukan prediksi berdasarkan threshold 0.5 (UNTUK SEMENTARA)
+    pred = factor(ifelse(prob_ens >= 0.5, "Yes", "No"), levels = c("No", "Yes"))
+  )
+
+cat("...Ensemble selesai.\n")
+```
+
+# Evaluasi
+```{r}
+# ==========================================
+# 9. Evaluasi 1: Rata-rata Metrik CV
+# ==========================================
+cat("\n--- Evaluasi 1: Rata-rata Metrik 10-Fold CV (dari Train Set) ---\n")
+
+# Kumpulkan semua metrik rata-rata
+mean_lr  <- mean_metrics_from_pred(best_pred(fit_lr),  "Logistic Regression")
+mean_dt  <- mean_metrics_from_pred(best_pred(fit_dt),  "Decision Tree")
+mean_rf  <- mean_metrics_from_pred(best_pred(fit_rf), "Random Forest") # Gunakan pred_rf_cv
+mean_ens <- mean_metrics_from_pred(pred_ens_cv, "Ensemble (Mean LR+DT)") # Perbarui nama
+
+# Gabungkan semua hasil CV
+cv_mean_tbl <- bind_rows(mean_lr, mean_dt, mean_rf, mean_ens)
+
+# Urutkan berdasarkan F1-Score untuk menentukan "result set"
+cv_mean_tbl <- cv_mean_tbl %>%
+  select(Model, F1_Score, Precision, Recall, Accuracy) %>%
+  arrange(desc(F1_Score))
+
+# Tampilkan Tabel Hasil CV menggunakan print() biasa
+cat("Tabel 1: Rata-rata Metrik 10-Fold CV (dihitung dari Train Set)\n")
+print(cv_mean_tbl)
+```
+
+```{r}
+# ==========================================
+# 10. Evaluasi 2: Performa pada Test Set 
+# ==========================================
+cat("\n--- Evaluasi 2: Performa Final pada Test Set ---\n")
+
+# --- 10.1. Buat Prediksi pada data_test ---
+cat("Membuat prediksi pada data_test...\n")
+# Prediksi standar (threshold 0.5)
+pred_test_lr  <- predict(fit_lr,  newdata = data_test)
+pred_test_dt  <- predict(fit_dt,  newdata = data_test)
+pred_test_rf  <- predict(fit_rf,  newdata = data_test)
+
+# Prediksi Ensemble (Mean LR+DT) pada Test Set
+prob_test_lr <- predict(fit_lr, newdata = data_test, type = "prob")
+prob_test_dt <- predict(fit_dt, newdata = data_test, type = "prob")
+
+prob_ens_test <- (prob_test_lr$Yes + prob_test_dt$Yes) / 2
+pred_test_ens <- factor(ifelse(prob_ens_test >= 0.5, "Yes", "No"), levels = c("No", "Yes"))
+
+
+# --- 10.2. Tampilkan Confusion Matrix & Metrik ---
+# Fungsi helper kecil untuk mencetak metrik
+print_metrics <- function(cm, model_name) {
+  cat(paste("\n--- Confusion Matrix:", model_name, "---\n"))
+  print(cm$table)
+  
+  # Gabungkan Akurasi dari $overall dengan metrik $byClass
+  metrics <- c(
+    cm$byClass[c("Precision", "Recall", "F1")],
+    cm$overall["Accuracy"]
+  )
+  cat(paste("Metrik", model_name, "(Precision, Recall, F1, Accuracy):\n"))
+  print(round(metrics, 4))
+}
+
+# Tampilkan metrik untuk semua model
+cm_lr  <- confusionMatrix(pred_test_lr,  data_test$Y, positive = "Yes")
+print_metrics(cm_lr, "Regresi Logistik")
+
+cm_dt  <- confusionMatrix(pred_test_dt,  data_test$Y, positive = "Yes")
+print_metrics(cm_dt, "Decision Tree")
+
+cm_rf  <- confusionMatrix(pred_test_rf,  data_test$Y, positive = "Yes")
+print_metrics(cm_rf, "Random Forest")
+
+# Ini adalah evaluasi utama kita
+cm_ens <- confusionMatrix(pred_test_ens, data_test$Y, positive = "Yes")
+print_metrics(cm_ens, "Ensemble (Mean LR+DT) @ Opt-Thresh")
+```
+
+```{r}
+# ==========================================
+# 11. Evaluasi 3: Kurva ROC pada Test Set
+# ==========================================
+cat("\n--- Evaluasi 3: Menghasilkan Plot Kurva ROC (dari Test Set) ---\n")
+
+# Dapatkan probabilitas "Yes" untuk setiap model
+# Kita butuh 'type = "prob"'
+prob_test_lr_roc <- predict(fit_lr,  newdata = data_test, type = "prob")
+prob_test_dt_roc <- predict(fit_dt,  newdata = data_test, type = "prob")
+prob_test_rf_roc <- predict(fit_rf,  newdata = data_test, type = "prob")
+# prob_ens_test sudah dihitung sebelumnya
+
+# Buat objek ROC
+roc_lr  <- roc(data_test$Y, prob_test_lr_roc$Yes, levels = c("No", "Yes"))
+roc_dt  <- roc(data_test$Y, prob_test_dt_roc$Yes, levels = c("No", "Yes"))
+roc_rf  <- roc(data_test$Y, prob_test_rf_roc$Yes, levels = c("No", "Yes"))
+roc_ens <- roc(data_test$Y, prob_ens_test, levels = c("No", "Yes"))
+
+# Cetak nilai AUC (Area Under Curve)
+cat("Nilai AUC (Area Under Curve) pada Test Set:\n")
+cat(paste("Logistic Regression:", round(auc(roc_lr), 4), "\n"))
+cat(paste("Decision Tree:      ", round(auc(roc_dt), 4), "\n"))
+cat(paste("Random Forest:      ", round(auc(roc_rf), 4), "\n"))
+cat(paste("Ensemble (LR+DT):   ", round(auc(roc_ens), 4), "\n"))
+
+# Plot kurva ROC
+cat("Menampilkan plot ROC...\n")
+tryCatch({
+  plot(roc_lr, col = "blue", main = "Kurva ROC pada Test Set", legacy.axes = TRUE)
+  lines(roc_dt, col = "green")
+  lines(roc_rf, col = "red")
+  lines(roc_ens, col = "purple", lty = 2)
+  
+  legend("bottomright",
+         legend = c(paste("LR (AUC=", round(auc(roc_lr), 3), ")"),
+                    paste("DT (AUC=", round(auc(roc_dt), 3), ")"),
+                    paste("RF (AUC=", round(auc(roc_rf), 3), ")"),
+                    paste("Ensemble (AUC=", round(auc(roc_ens), 3), ")")),
+         col = c("blue", "green", "red", "purple"),
+         lty = c(1, 1, 1, 2),
+         cex = 0.8)
+}, error = function(e) {
+  cat("Gagal menampilkan plot ROC. Error:", e$message, "\n")
+})
+```
+```{r}
+# ==========================================
+# 12. Evaluasi 4: Plot Feature Importance
+# ==========================================
+cat("\n--- Evaluasi 4: Menghasilkan Plot Feature Importance ---\n")
+
+if (interactive() && "ggplot2" %in% .packages()) {
+  tryCatch({
+    # Plot varImp untuk Random Forest
+    vi_rf <- varImp(fit_rf, scale = FALSE)
+    p_vi_rf <- plot(vi_rf, top = 20, main = "Top 20 Feature Importance (Random Forest)")
+    print(p_vi_rf)
+  }, error = function(e) {
+    cat("Gagal menampilkan plot Feature Importance. Error:", e$message, "\n")
+  })
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

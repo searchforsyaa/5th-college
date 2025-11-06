@@ -1,0 +1,366 @@
+---
+title: "Tugas 1 SDS"
+author: "Kelompok C"
+date: "2025-10-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+```
+
+
+# Import Data
+```{r}
+getwd()
+list.files()
+```
+
+```{r}
+data<-read_excel("Persentase Rumah Tangga yang Memiliki Akses Terhadap Sumber Air Minum Layak Menurut Kabupaten_Kota di Provinsi Jawa Tengah, 2023.xlsx")
+str(data)
+head(data)
+```
+
+
+# Import SHP
+```{r}
+library(sf)
+library(dplyr)
+indo_desa <- st_read("BATAS WILAYAH KELURAHAN-DESA 10K/Batas_Wilayah_KelurahanDesa_10K_AR.shp")
+```
+
+```{r}
+# cek nama kolom
+names(indo_desa)
+```
+
+```{r}
+unique(indo_desa$WADMPR) # mengecek nama provinsi
+```
+
+```{r}
+# Subset untuk Jateng
+jateng <- indo_desa %>% filter(WADMPR == 
+                                "Jawa Tengah")
+# Cek hasil
+plot(st_geometry(jateng), main = "Wilayah Provinsi Jawa Tengah")
+```
+
+```{r}
+library(lwgeom)
+
+# perbaiki geometri
+jateng <- jateng %>%
+  mutate(geometry = st_make_valid(geometry))
+```
+
+
+```{r}
+# menggabungkan seluruh desar menjadi polygon kab/kota (Union/dissolve)
+kab.jateng <- jateng %>%
+  group_by(WADMKK) %>%
+  summarise(geometry = st_union(geometry))
+
+plot(st_geometry(kab.jateng), col = 
+       "lightblue", main = "Kabupaten/Kota di Jawa Tengah")
+```
+
+```{r}
+# mengecek nama kabupeten
+unique(data$`Kabupaten/Kota`)
+unique(jateng$WADMKK)
+```
+```{r}
+# Samakan nama kolom
+data$kab.kota <-data$`Kabupaten/Kota`
+kab.jateng$kab.kota <-kab.jateng$WADMKK
+```
+
+```{r}
+sort(unique(data$kab.kota))
+sort(unique(kab.jateng$kab.kota))
+```
+```{r}
+# Urutkan data  agar sesuai dengan urutan kabupaten di shapefile
+data_urut <- data[match(kab.jateng$WADMKK, data$`Kabupaten/Kota`), ]
+
+# Cek apakah hasil match sudah benar
+identical(data_urut$`Kabupaten/Kota`, kab.jateng$WADMKK)
+```
+```{r}
+head(data_urut)
+```
+
+
+```{r}
+# Gabungkan data ke objek sf
+jateng_sf <- kab.jateng
+jateng_sf$'Air Minum Layak' <- data_urut$'Rumah Tangga yang Memiliki Akses Terhadap Sumber Air Minum Layak'
+```
+
+```{r}
+print(jateng_sf)
+```
+Ini adalah proses menggabungkan data statistik (atribut) ke dalam data spasial (peta).
+
+Tujuan utamanya adalah untuk "menempelkan" data statistik (dalam kasus ini, persentase 'Air Minum Layak') ke poligon peta yang sesuai, sehingga Anda bisa membuat peta tematik (choropleth map).
+
+Berikut adalah penjelasan rinci dari setiap langkah:
+
+1. jateng_sf <- kab.jateng
+Apa yang dilakukan: Anda menyalin objek spasial kab.jateng (yang berisi peta kabupaten/kota di Jawa Tengah) ke dalam objek baru bernama jateng_sf.
+
+Mengapa: Ini adalah praktik yang sangat baik. Anda tidak mengubah data master (kab.jateng) Anda. Semua modifikasi (seperti penambahan data) dilakukan pada salinannya (jateng_sf), sehingga jika terjadi kesalahan, data peta asli Anda tetap aman.
+
+2. jateng_sf$'Air Minum Layak' <- data_urut$'Rumah Tangga yang...'
+Apa yang dilakukan: Ini adalah inti dari proses "join" atau penggabungan.
+
+jateng_sf$'Air Minum Layak': Anda membuat kolom baru di dalam data jateng_sf dengan nama persis 'Air Minum Layak'.
+
+<-: Anda mengisinya dengan data yang berasal dari...
+
+data_urut$'Rumah Tangga...': ...sebuah kolom dari dataframe lain (data_urut).
+
+Bagaimana cara kerjanya: Ini adalah "join" manual atau column-binding (mirip cbind). R akan mengambil seluruh vektor (kolom) dari data_urut dan menempelkannya sebagai kolom baru di jateng_sf.
+
+3. Tabel Output (Hasilnya)
+Tabel yang Anda tampilkan membuktikan bahwa proses itu berhasil:
+
+Anda sekarang memiliki satu objek jateng_sf yang berisi kolom-kolom asli dari peta (WADMKK, geometry) dan kolom baru yang berisi data statistik (Air Minum Layak).
+
+Contoh: Baris Banjarnegara sekarang memiliki data geometry (poligon petanya) DAN data Air Minum Layak (nilai 87.56).
+
+Peringatan Kritis (Analisis Kritis)
+Metode yang Anda gunakan ini sangat bergantung pada asumsi krusial:
+
+Urutan baris (row order) di kab.jateng harus 100% identik dengan urutan baris di data_urut.
+
+Artinya, baris ke-1 di kab.jateng (Banjarnegara) harus sesuai dengan baris ke-1 di data_urut (data Banjarnegara).
+
+Baris ke-2 (Banyumas) harus sesuai dengan baris ke-2 (data Banyumas), dan seterusnya.
+
+Jika data_urut Anda, misalnya, diurutkan berbeda (misal, urutan abjadnya beda), maka data Air Minum Layak akan salah tempel ke kabupaten yang salah.
+
+Metode yang Lebih Aman (Best Practice): Cara yang jauh lebih aman dan profesional adalah menggunakan join berbasis kunci (key-based join), seperti fungsi left_join dari paket dplyr:
+
+R
+
+# Asumsikan kedua tabel punya kolom 'WADMKK' atau 'kab.kota' sebagai kunci
+jateng_sf <- dplyr::left_join(kab.jateng, data_urut, by = c("WADMKK" = "kab.kota"))
+Ini akan mencocokkan data berdasarkan nama kabupaten (by = ...), tidak peduli apa urutan barisnya.
+
+
+```{r}
+library(sf)
+library(spdep)
+library(tmap)
+library(cols4all)
+```
+# Peta Sebaran Sumber Air Minum Layak
+
+```{r}
+tm_shape(jateng_sf) +
+ tm_fill(
+    "Air Minum Layak",
+    fill.scale = tm_scale_continuous(
+      values = "brewer.yl_or_rd",
+      n = 9 # jumlah gradasi warna (semakin banyak semakin halus)
+    ),
+    fill.legend = tm_legend(title = "Air Minum Layak")
+  ) +
+  tm_borders(col = 'black', lwd = 0.5) +
+  tm_title("Rumah Tangga yang Memiliki Akses Terhadap Sumber Air Minum Layak di Jawa Tengah") +
+  tm_layout(legend.outside = TRUE)
+```
+Cara Membaca Warna
+Warna Terang (Kuning Pucat): Menandakan persentase akses yang lebih rendah. Wilayah dengan warna ini memiliki persentase rumah tangga dengan air minum layak yang paling sedikit (sekitar 84% - 90%).
+
+Warna Gelap (Merah Tua/Marun): Menandakan persentase akses yang lebih tinggi. Wilayah dengan warna ini memiliki cakupan air minum layak yang sangat baik (mendekati 98% - 100%).
+
+3. Pola Spasial (Temuan Kunci)
+Peta ini menunjukkan bahwa akses air minum layak tidak merata di seluruh Jawa Tengah.
+
+Wilayah dengan Akses Tinggi (Warna Gelap):
+
+Terlihat klaster di bagian tengah-selatan (wilayah Soloraya dan sekitarnya).
+
+Beberapa wilayah di Pantura Timur (seperti Kudus dan sekitarnya) juga menunjukkan warna yang sangat gelap.
+
+Kepulauan Karimunjawa (titik hitam di utara) juga tampaknya memiliki akses tinggi.
+
+Wilayah dengan Akses Rendah (Warna Terang):
+
+Terdapat beberapa wilayah dengan warna kuning pucat yang menonjol, menunjukkan tantangan dalam penyediaan air minum layak.
+
+Satu klaster terlihat di bagian tengah (kemungkinan area pegunungan seperti Wonosobo, Banjarnegara).
+
+Wilayah lain di Pantura Barat (seperti Brebes) dan di ujung timur laut (seperti Blora/Rembang) juga menunjukkan warna yang lebih terang dibandingkan rata-rata.
+
+Kesimpulan: Secara visual, peta ini mengidentifikasi adanya kesenjangan spasial. Wilayah seperti Soloraya dan sebagian Pantura Timur memiliki cakupan air minum layak yang hampir universal, sementara wilayah di area tengah (pegunungan) dan beberapa di ujung provinsi masih tertinggal. Ini bisa menjadi dasar untuk analisis lebih lanjut, seperti autokorelasi spasial (Moran's I), untuk menguji apakah wilayah dengan akses rendah/tinggi ini memang benar-berkelompok secara statistik.
+
+
+# Autokorelasi spasial Global
+
+## Matriks bobot spasial
+```{r}
+library(spdep)
+nb <- poly2nb(jateng_sf)
+lw <- nb2listw(nb, style = "W") # weight list
+```
+
+```{r}
+moran.test(jateng_sf$'Air Minum Layak', lw)
+```
+Karena $p-value = 0.02121 < 0.05$ maka $H_0$ ditolak, yang berarti terdapat autokorelasi spasial global yang signifikan secara statistik. Nilai statistik Moran’s I yang positif (0.203) menunjukkan bahwa pola autokorelasi ini adalah clustering (pengelompokan positif). Artinya, kabupaten/kota dengan Akses Sanitasi Layak tinggi cenderung berdekatan secara geografis dengan kabupaten/kota yang juga tinggi, dan sebaliknya, wilayah dengan akses rendah cenderung berdekatan dengan yang rendah. Pola pengelompokan ini bukan terjadi karena kebetulan acak.
+
+Mari kita bedah angka-angka kuncinya:p-value = 0.02121Ini adalah angka terpenting. Nilai ini lebih kecil dari tingkat signifikansi standar $\alpha = 0.05$ (atau 5%).Dalam uji hipotesis, Hipotesis Nol ($H_0$) adalah "tidak ada autokorelasi spasial" (polanya acak).Karena $p < 0.05$, kita menolak Hipotesis Nol. Ini berarti kita punya cukup bukti untuk menyatakan bahwa pola ini bukan acak. 
+
+Polanya signifikan secara statistik.Moran I statistic = 0.20314926Ini adalah nilai Moran's I yang dihitung. Nilainya positif (lebih besar dari nilai Expectation yang hampir nol).I positif berarti autokorelasi spasial positif, yang definisinya adalah clustering (serupa berkelompok dengan serupa).(Jika nilainya negatif, itu berarti autokorelasi spasial negatif/dispersi, atau pola "papan catur" di mana nilai tinggi dikelilingi nilai rendah).
+Moran I statistic standard deviate = 2.0294 Ini adalah nilai Z-score. Nilai ini menunjukkan seberapa jauh (dalam standar deviasi) hasil observasi (0.203) dari nilai yang diharapkan (ekspektasi) jika polanya acak.Nilai Z-score 2.0294 berada di luar rentang "normal" (yang biasanya antara -1.96 dan +1.96 untuk signifikansi 95%). Karena nilainya positif dan besar, ini memperkuat kesimpulan bahwa ada pengelompokan positif yang signifikan.
+
+# Autokorelasi spasial lokal
+
+## Moran's Plot
+```{r}
+# Plot Moran's
+mp <- moran.plot(as.vector(scale(jateng_sf$'Air Minum Layak')), lw)
+```
+Garis Tren (Hitam Solid): Garis ini memiliki kemiringan positif. Kemiringan (slope) dari garis inilah yang merepresentasikan nilai Global Moran's I (0.203). Ini mengonfirmasi adanya autokorelasi spasial positif secara keseluruhan: pola dominannya adalah High-High dan Low-Low.
+Pola Dominan: Sebagian besar titik (lingkaran) berada di kuadran Kanan Atas (High-High) dan Kiri Bawah (Low-Low). Ini adalah yang menyebabkan nilai Global Moran's I Anda positif.
+ 
+Titik Signifikan (Bentuk Berlian 💎): Titik-titik yang disorot dengan angka (9, 10, 26, 21) kemungkinan besar adalah wilayah yang hasil uji LISA-nya signifikan secara statistik ($p < 0.05$). 
+Ini adalah temuan paling penting:
+Wilayah 9, 10, 26: Berada di kuadran Kiri Atas (Low-High). Wilayah ini memiliki akses air yang sangat rendah (nilai X sangat negatif), tetapi mereka dikelilingi oleh tetangga yang aksesnya sedikit di atas rata-rata. Mereka adalah outlier spasial yang signifikan.
+Wilayah 21: Berada di kuadran Kanan Bawah (High-Low). Wilayah ini memiliki akses sedikit di atas rata-rata (nilai X positif), tetapi dikelilingi oleh tetangga dengan akses yang sangat rendah (nilai Y sangat negatif). Ini juga merupakan outlier spasial yang signifikan.
+
+
+## Hitung Local Moran's I
+```{r}
+# Hitung local Moran
+airminum_num <- as.numeric(unlist(jateng_sf$'Air Minum Layak'))
+# Hitung local Moran
+loc_moran <- localmoran(airminum_num, lw, alternative = "greater")
+head(loc_moran)
+```
+Ini adalah tabel hasil Analisis LISA (Local Moran's I).Analisis ini bertujuan untuk "membedah" hasil Global Moran's I Anda. Jika Global Moran's I memberi tahu Anda apakah ada klaster (dan Anda tahu ada), LISA memberi tahu Anda di mana tepatnya klaster tersebut berada.Tabel ini menguji setiap wilayah (kabupaten/kota) satu per satu untuk melihat apakah polanya signifikan.Cara Membaca TabelHal terpenting yang harus dicari adalah signifikansi statistik. Kita menggunakan aturan yang sama seperti sebelumnya:
+Aturan Utama: Lihat kolom Pr(z > E(Ii)) (ini adalah $p-value$).
+Jika $p-value < 0.05$, maka pola di wilayah tersebut SIGNIFIKAN (bukan kebetulan).
+Jika $p-value > 0.05$, maka polanya TIDAK SIGNIFIKAN (bisa jadi acak).
+
+Interpretasi Hasil per WilayahMari kita analisis 6 wilayah (baris) yang Anda berikan:
+Wilayah 2 (Temuan Paling Signifikan) 🏆$p-value = 0.004770701$Interpretasi: Nilai ini jauh di bawah 0.05. Ini berarti Wilayah 2 adalah bagian dari klaster yang sangat signifikan secara statistik.Karena nilai Ii (0.188) positif, ini adalah klaster spasial (entah itu High-High atau Low-Low). Pola pengelompokan di sekitar wilayah ini sangat nyata dan bukan kebetulan.
+
+Wilayah 1 (Cukup Signifikan / Borderline) ⚠️$p-value = 0.050672343$Interpretasi: Nilai ini tepat di batas 0.05. Dalam statistik, ini sering disebut "cukup signifikan" atau "signifikan secara marginal" (pada level 10%). Ada indikasi kuat bahwa ini adalah klaster (karena Ii positif dan besar), tetapi signifikansinya tidak sekuat Wilayah 2.
+
+Wilayah 3, 4, 5, dan 6 (Tidak Signifikan) ❌$p-value$: 0.475, 0.108, 0.854, dan 0.554Interpretasi: Semua nilai $p-value$ ini jauh di atas 0.05.Ini berarti, meskipun Wilayah 5 dan 6 memiliki Ii negatif (menunjukkan potensi outlier), pola tersebut tidak signifikan secara statistik. Hal yang sama berlaku untuk Wilayah 3 dan 4. Pola apa pun yang terlihat di wilayah-wilayah ini kemungkinan besar terjadi karena kebetulan acak.
+
+
+
+## Tambahkan hasil ke data sf
+```{r}
+jateng_sf$lmI <- loc_moran[, "Ii"]
+jateng_sf$lmZ <- loc_moran[, "Z.Ii"]
+jateng_sf$lmp <- loc_moran[, "Pr(z > E(Ii))"]
+```
+
+## Mode tampilan peta
+```{r}
+tmap_mode("plot")
+# Peta variabel asli (Rumah Tangga yang Memiliki Akses Terhadap Sumber Air Minum Layak di Jawa Tengah)
+p1 <- tm_shape(jateng_sf) +
+  tm_polygons(
+    fill = "Air Minum Layak",
+    fill.scale = tm_scale_intervals(
+      style = "quantile",
+      values = "brewer.yl_or_rd"),
+      fill.legend = tm_legend(title = "Air Minum layak")) +
+  tm_layout(legend.outside = TRUE)
+p1
+```
+
+## Peta Lokal Moran's I
+```{r}
+p2 <- tm_shape(jateng_sf) +
+  tm_polygons(
+    fill = "lmI",
+    fill.scale = tm_scale_intervals(
+      style = "quantile",
+      values = "brewer.blues",
+      midpoint = NA),
+    fill.legend = tm_legend(title = "Local Moran's I")
+    ) +   
+  tm_layout(legend.outside = TRUE)
+p2
+```
+
+## Peta Z score
+```{r}
+p3 <- tm_shape(jateng_sf) +
+  tm_polygons(
+    fill = "lmZ",
+    fill.scale = tm_scale_intervals(
+      breaks = c(-Inf, 1.65, Inf),
+      labels = c("Tidak Signifikan", "Signifikan"),
+      values = c("grey80", "orange"),
+      midpoint = NA),
+      fill.legend = tm_legend(title = "Z-score")) +
+  tm_layout(legend.outside = TRUE)
+p3
+```
+
+## Peta p-value
+```{r}
+p4 <- tm_shape(jateng_sf) +
+  tm_polygons(
+    fill = "lmp",
+    fill.scale = tm_scale_intervals(
+      breaks = c(-Inf, 0.05, Inf),
+      labels = c("Signifikan", "Tidak signifikan"),
+      values = c("purple", "grey80")),
+    fill.legend = tm_legend(title = "p-value")) +
+  tm_layout(legend.outside = TRUE)
+p4
+```
+
+## Cluster for quadrant
+```{r}
+jateng_sf$quadrant <- NA
+# high-high
+jateng_sf[(mp$x >= 0 & mp$wx >= 0) & (jateng_sf$lmp <= 0.05), "quadrant"]<- 1
+# low-low
+jateng_sf[(mp$x <= 0 & mp$wx <= 0) & (jateng_sf$lmp <= 0.05), "quadrant"]<- 2
+# high-low
+jateng_sf[(mp$x >= 0 & mp$wx <= 0) & (jateng_sf$lmp <= 0.05), "quadrant"]<- 3
+# low-high
+jateng_sf[(mp$x <= 0 & mp$wx >= 0) & (jateng_sf$lmp <= 0.05), "quadrant"]<- 4
+# non-significant
+jateng_sf[(jateng_sf$lmp > 0.05), "quadrant"] <- 5
+# Peta cluster quadrant
+p_quadrant <- tm_shape(jateng_sf) +
+  tm_polygons(
+    fill = "quadrant",
+    fill.scale = tm_scale_intervals(
+      breaks = c(1, 2, 3, 4, 5, 6),
+      labels = c("High-High", "Low-Low", "High-Low", "Low-High", "Non-significant"),
+      values = c("red", "blue", "lightpink", "skyblue2", "white")),
+    fill.legend = tm_legend(title = "")) +
+  tm_borders(fill_alpha = 0.5) +
+  tm_title("Clusters") +
+  tm_layout(frame = FALSE, legend.outside = TRUE)
+p_quadrant
+```
+
+
+
+
+
+
+
+
+
+

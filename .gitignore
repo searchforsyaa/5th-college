@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+.Rhistory
+.RData
+.Rproj.user/
+renv/library/
+data/
+*.csv
+*.xlsx
+.ipynb_checkpoints/
+.vscode/
