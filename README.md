@@ -3,18 +3,15 @@
 ## Daftar Mata Kuliah & Tugas
 
 - **Pengantar Data Mining**
-  - Tugas 1
-  - Tugas 2 (tambahkan nanti)
+  - Project 1
+  - Tugas 2
 
 - **Analisis Spasial**
-  - Tugas 1
-  - Tugas 2 (tambahkan nanti)
+  - Project 1
 
 - **Analisis Runtun Waktu**
-  - Tugas 1
-  - Tugas 2 (tambahkan nanti)
+  - comming
 
 - **Manajemen Big Data**
-  - Tugas 1
-  - Tugas 2 (tambahkan nanti)
+  - comming
 
