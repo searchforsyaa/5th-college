@@ -15,3 +15,5 @@
 - **Manajemen Big Data**
   - comming
 
+- **Jaringan Syaraf Tiruan**
+  - Project
