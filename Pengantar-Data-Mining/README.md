@@ -2,5 +2,5 @@
 
 Daftar Tugas:
 
-- Tugas 1
-- Tugas 2 (tambahkan nanti)
+- Tugas 2 clusstering wine dataset
+  
