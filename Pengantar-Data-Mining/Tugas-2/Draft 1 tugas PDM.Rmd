@@ -1,5 +1,5 @@
 ---
-title: "Draft 2 TPB 1 PDM"
+title: "Draft 1 Tugas 2 PDM"
 author: "Muhammad Ardiansyah"
 date: '`r Sys.Date()`'
 output: html_document
@@ -17,19 +17,23 @@ list.files()
 # Load Data
 ```{r}
 # Muat library
-library(dplyr)       # Untuk manipulasi data (misal: pipeline %>%)
-library(factoextra)  # Untuk visualisasi cluster dan penentuan K
-library(cluster)     # Mengandung algoritma clustering (termasuk kmeans)
-library(ggplot2)     # Untuk visualisasi (boxplots)
-library(reshape2)    # Untuk 'melt' data frame (untuk ggplot)
-library(ggcorrplot)  # Untuk heatmap korelasi
+library(tidyverse)
+library(factoextra)  
+library(cluster)     
+library(clusterSim)
+library(GGally)
+library(ggiraphExtra)
+library(ggplot2)     
+library(reshape2)    
+library(ggcorrplot)
+library(psych)
 
 cat("Library berhasil dimuat.\n")
 ```
 
 ```{r}
 # Muat data
-data_raw <- read.csv("D:/Kuliah/Tugas Kuliah/semester 5/Pengantar Data Mining/Tugas 123/Customer Data.csv")
+data_raw <- read.csv("D:/Kuliah/Tugas Kuliah/semester 5/Pengantar Data Mining/Tugas 123/wine-clustering.csv")
 ```
 
 ```{r}
@@ -42,14 +46,50 @@ print(glimpse(data_raw))
 str(data_raw)
 ```
 ```{r}
-# Seleksi fitur
- data_pre <- data_raw %>% select(-CUST_ID)
+# statitik deskriptif
+summary(data_raw)
+```
+```{r}
+# Cek Missing Value
+colSums(is.na(data_raw))
 ```
 
 # EDA
 ```{r}
+cat("\nMembuat plot histogram...\n")
+data_raw %>%
+  gather(attributes, value, 1:13) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(fill = 'lightblue2', color = 'black') +
+  facet_wrap(~attributes, scales = 'free_x') +
+  labs(x="Values", y="Frequency") +
+  theme_bw()
+```
+```{r}
+cat("\nMembuat boxplots untuk visualisasi outlier...\n")
+  
+cols_to_plot <- names(data_raw)
+  
+data_melted_viz <- melt(data_raw)
+    
+p_boxplots_pre <- ggplot(data_melted_viz, aes(x = variable, y = value)) +
+  geom_boxplot(fill = "steelblue", outlier.color = "red", outlier.alpha = 0.3) +
+  facet_wrap(~ variable, scales = "free_y", ncol = 6) +
+  theme_minimal() +
+  labs(title = "Visualisasi Outlier",
+       x = "Fitur", y = "Nilai") +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    strip.text = element_text(size = 4, margin = margin(t = 2, b = 2)),
+    plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm") 
+    )
+print(p_boxplots_pre)
+```
+
+```{r}
 cat("\nMembuat heatmap korelasi...\n")
-corr_matrix <- cor(data_pre, use = "pairwise.complete.obs")
+corr_matrix <- cor(data_raw, method = 'pearson')
   
 # Visualisasi heatmap
 p_corr <- ggcorrplot(corr_matrix, 
@@ -70,38 +110,35 @@ cat("Heatmap korelasi telah dibuat. Lihat jendela Plots.\n")
 # Preprocessing
 
 ```{r}
-# Missing value
-cat("\nMissing values (NA) per kolom:\n")
-print(sapply(data_pre, function(x) sum(is.na(x))))
+# Handling outlier dengan Winsorizing manual
+winsor_manual <- function(x, lower_q = 0.01, upper_q = 0.99) {
+  lower <- quantile(x, lower_q, na.rm = TRUE)
+  upper <- quantile(x, upper_q, na.rm = TRUE)
+  x[x < lower] <- lower
+  x[x > upper] <- upper
+  return(x)
+}
+
+# Terapkan winsor pada semua kolom numerik
+num_cols <- names(data_raw)
+
+for (col in num_cols) {
+  data_raw[[col]] <- winsor_manual(data_raw[[col]])
+}
 ```
 
 ```{r}
-  # Imputasi dengan Median (lebih kuat terhadap outlier daripada Mean).
-data_imputed <- data_pre %>%
-  mutate(
-    MINIMUM_PAYMENTS = ifelse(is.na(MINIMUM_PAYMENTS), 
-                                median(MINIMUM_PAYMENTS, na.rm = TRUE), 
-                                MINIMUM_PAYMENTS),
-    CREDIT_LIMIT = ifelse(is.na(CREDIT_LIMIT), 
-                          median(CREDIT_LIMIT, na.rm = TRUE), 
-                          CREDIT_LIMIT)
-    )
-  
-cat("\nMissing values setelah imputasi:\n")
-print(sapply(data_imputed, function(x) sum(is.na(x))))
-```
-```{r}
 cat("\nMembuat boxplots untuk visualisasi outlier...\n")
   
-cols_to_plot <- names(data_imputed)
+cols_to_plot <- names(data_raw)
   
-data_melted_viz <- melt(data_imputed)
+data_melted_viz <- melt(data_raw)
     
 p_boxplots_pre <- ggplot(data_melted_viz, aes(x = variable, y = value)) +
   geom_boxplot(fill = "steelblue", outlier.color = "red", outlier.alpha = 0.3) +
   facet_wrap(~ variable, scales = "free_y", ncol = 6) +
   theme_minimal() +
-  labs(title = "Visualisasi Outlier (SEBELUM Penanganan)",
+  labs(title = "Visualisasi Outlier",
        x = "Fitur", y = "Nilai") +
   theme(
     axis.text.x = element_blank(),
@@ -109,79 +146,84 @@ p_boxplots_pre <- ggplot(data_melted_viz, aes(x = variable, y = value)) +
     strip.text = element_text(size = 4, margin = margin(t = 2, b = 2)),
     plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm") 
     )
-    
-  print(p_boxplots_pre)
+print(p_boxplots_pre)
 ```
 
-```{r}
-# Menangani outlier dengan log transform
-  
-# Tentukan kolom finansial yang skewed (sama dengan 'cols_to_plot')
-cols_to_log <- cols_to_plot
-  
-data_transformed <- data_imputed
-# Terapkan log1p hanya ke kolom yang ditentukan
-data_transformed[cols_to_log] <- lapply(data_transformed[cols_to_log], function(x) log1p(x))
-```
 
 ```{r}
-# Setelah outlier ditangani
-data_melted_post <- melt(data_transformed)
-p_boxplots_post <- ggplot(data_melted_post, aes(x = variable, y = value)) +
-  geom_boxplot(fill = "darkgreen", outlier.color = "orange") +
-  facet_wrap(~ variable, scales = "free_y", ncol = 6) +
-  theme_minimal() +
-  labs(title = "Visualisasi Distribusi (SETELAH Log Transform)",
-       x = "Fitur", y = "Nilai Log(x+1)") +
-  theme(
-    axis.text.x = element_blank(),
-    axis.ticks.x = element_blank(),
-    strip.text = element_text(size = 4, margin = margin(t = 2, b = 2)), 
-    plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm") 
-    )
-    
-print(p_boxplots_post)
+summary(data_raw)
 ```
 
 ```{r}
 # Scalling
 # Kita standardisasi semua fitur (mean=0, std.dev=1).
-data_scaled <- scale(data_transformed)
-data_scaled <- as.data.frame(data_transformed) # Konversi matriks 'scale' ke data frame
+data_scaled <- scale(data_raw)
+data_scaled <- as.data.frame(data_scaled) # Konversi matriks 'scale' ke data frame
 summary(data_scaled)
 ```
 
-# Penentuan K optimal
+## Uji KMO
 ```{r}
-# set.seed untuk hasil yang konsisten/reproduktif
+# Hitung KMO
+kmo_result <- KMO(data_scaled)
+print(kmo_result)
+```
+## Cek multikolinearitas
+```{r}
+CekVIF <- function(data_raw) {
+  corr = as.matrix(cor(data_raw))
+  VIF = diag(solve(corr))
+  
+  return(VIF)
+}
+
+CekVIF(data_raw)
+```
+Dari hasil perhitungan diatas dapat diketahui bahwa untuk tiap variabel nilai VIF < 10, artinya tidak terjadi masalah miltikolinearitas.
+
+## PCA 
+
+```{r}
+pca_data <- prcomp(data_scaled, center = TRUE, scale = TRUE)
+summary(pca_data)
+```
+```{r}
+# Visualisasi PCA
+pca_df <- as.data.frame(pca_data$x[,1:5])
+ggplot(pca_df, aes(PC1, PC2)) +
+  geom_point(color="darkgreen") +
+  ggtitle("PCA (2 Komponen Utama)") +
+  theme_minimal()
+```
+
+# K-means dengan pca
+```{r}
 set.seed(123)
 
 # Elbow Method
 # Mencari titik "siku" dimana penambahan cluster baru tidak lagi
 # memberikan penurunan drastis pada 'within-cluster sum of squares' (WSS).
-p_elbow <- fviz_nbclust(data_scaled, kmeans, method = "wss") +
+p_elbow <- fviz_nbclust(pca_df, kmeans, method = "wss") +
   labs(title = "Elbow Method",
        subtitle = "Mencari K optimal")
-print(p_elbow) 
+print(p_elbow)
 ```
+
 ```{r}
-# Metode Silhouette
-# Mengukur seberapa baik data terpisah antar cluster.
-# Cari nilai K yang memberikan skor Silhouette tertinggi.
-p_silhouette <- fviz_nbclust(data_scaled, kmeans, method = "silhouette") +
+set.seed(123)
+p_silhouette <- fviz_nbclust(pca_df, kmeans, method = "silhouette") +
   labs(title = "Metode Silhouette",
        subtitle = "Mencari K optimal")
   
 print(p_silhouette)
 ```
 ```{r}
-K_OPTIMAL <- 6
+K_OPTIMAL <- 3
 ```
 
-# Modelling dengan k-means
 ```{r}
 set.seed(123)
-final_model <- kmeans(data_scaled, centers = K_OPTIMAL, nstart = 25)
+kmeans_pca <- kmeans(pca_df, centers = K_OPTIMAL, nstart = 25)
 ```
 
 ```{r}
@@ -189,11 +231,11 @@ final_model <- kmeans(data_scaled, centers = K_OPTIMAL, nstart = 25)
   
 # K-Means tidak sensitif terhadap urutan, jadi tidak ada 'peringkat' cluster.
   
-p_cluster_viz <- fviz_cluster(final_model, data = data_scaled,
+p_cluster_viz <- fviz_cluster(kmeans_pca, data = data_scaled,
                               palette = "jco", # Skema warna
                               ggtheme = theme_minimal(),
                               main = paste("Visualisasi Cluster K-Means (K=", K_OPTIMAL, ")"),
-                              ellipse.type = "convex", # Menggambar 'amplop' di sekitar cluster
+                              ellipse.type = "convex", 
                               geom = "point",
                               pointsize = 0.5,
                               show.clust.cent = TRUE)
@@ -201,58 +243,44 @@ print(p_cluster_viz)
 cat("Visualisasi cluster telah dibuat. Lihat jendela Plots.\n")
 ```
 ```{r}
-# Interpretasi (Profiling Persona)
+cat("\n--- UKURAN CLUSTER ---\n")
+print(kmeans_pca$size)
+```
+
+```{r}
+# Hitung Silhouette
+sil <- silhouette(kmeans_pca$cluster, dist(pca_df))
+avg_sil <- mean(sil[, 3])
+print(round(avg_sil, 4))
+```
+Interpretasi silhouette:
+- 0.71-1.00: Strong structure
+- 0.51-0.70: Reasonable structure
+- 0.26-0.50: Weak structure
+- < 0.25   : No substantial structure
+
+
+```{r}
+# Interpretasi 
   
-# Kita tambahkan label cluster ke data SEBELUM scaling (data_imputed)
-# agar kita bisa menginterpretasikan nilai aslinya (misal: Dollar, bukan Z-score)
-  
-data_final <- data_imputed %>%
-  mutate(Cluster = final_model$cluster)
+data_final <- data_raw %>%
+  mutate(Cluster = kmeans_pca$cluster)
 # Sekarang, kita hitung nilai RATA-RATA setiap fitur, dikelompokkan berdasarkan Cluster
 cluster_personas <- data_final %>%
   group_by(Cluster) %>%
   summarise_all(mean) %>%
   as.data.frame()
   
-cat("\n--- PROFILING PERSONA CLUSTER (Rata-rata Fitur) ---\n")
-print(cluster_personas)
+cat("\n--- PROFILING CLUSTER (Rata-rata Fitur) ---\n")
+cluster_personas
 ```
-
 ```{r}
-  
-cat("\n--- UKURAN CLUSTER ---\n")
-print(final_model$size)
+ggRadar(
+  data = data_final,
+  mapping = aes(colours = Cluster),
+  interactive = T
+)
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
