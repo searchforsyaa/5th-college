@@ -10,3 +10,5 @@ data/
 *.xlsx
 .ipynb_checkpoints/
 .vscode/
+# Abaikan file
+Manajemen-Big-Data/Image-preprocessing/Project/CrisisMMD_v2.0
